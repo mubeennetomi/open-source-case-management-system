@@ -96,6 +96,7 @@ export default function MonitorPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [participants, setParticipants] = useState<Agent[]>([]);
   const [prevConvs, setPrevConvs] = useState<Conversation[]>([]);
+  const [contactDetail, setContactDetail] = useState<{ email?: string; phone_number?: string } | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   const [tabCounts, setTabCounts] = useState({ all: 0, assigned: 0, unassigned: 0 });
   const [loading, setLoading] = useState(true);
@@ -196,6 +197,7 @@ export default function MonitorPage() {
   // Load messages
   useEffect(() => {
     if (!selected) return;
+    setContactDetail(null);
     setLoadingMsgs(true);
     fetch(`/api/conversations/${selected.id}/messages`)
       .then(r => r.json())
@@ -205,6 +207,12 @@ export default function MonitorPage() {
       .then(r => r.json())
       .then(data => setParticipants(data?.payload ?? []));
     if (selected.meta?.sender?.id) {
+      fetch(`/api/contacts/${selected.meta.sender.id}`)
+        .then(r => r.json())
+        .then(data => {
+          const c = data?.email !== undefined ? data : (data?.payload ?? data);
+          setContactDetail({ email: c?.email || undefined, phone_number: c?.phone_number || undefined });
+        });
       fetch(`/api/contacts/${selected.meta.sender.id}/conversations`)
         .then(r => r.json())
         .then(data => {
@@ -576,7 +584,7 @@ export default function MonitorPage() {
               <div className="flex gap-2">
                 {[
                   { label: "New Conversation", icon: "M2 2h10a1 1 0 011 1v6a1 1 0 01-1 1H5l-3 3V3a1 1 0 011-1z", action: () => {} },
-                  { label: "Edit Contact", icon: "M11 2l1 1-8 8H3v-1L11 2z", action: () => { setEditName(selected.meta.sender.name); setEditOpen(true); } },
+                  { label: "Edit Contact", icon: "M11 2l1 1-8 8H3v-1L11 2z", action: () => { setEditName(selected.meta.sender.name); setEditEmail(contactDetail?.email || ""); setEditPhone(contactDetail?.phone_number || ""); setEditOpen(true); } },
                   { label: "Merge Contact", icon: "M3 6l4-4 4 4M7 2v10M3 10l4 4 4-4", action: () => {} },
                   { label: "Delete Contact", icon: "M2 4h10M5 4V2h4v2M9 4v8M5 4v8M3 4l1 8h6l1-8", danger: true, action: () => setDeleteOpen(true) },
                 ].map(btn => (
@@ -594,8 +602,8 @@ export default function MonitorPage() {
 
               {/* Contact info */}
               <div className="mt-3 space-y-1.5 text-xs text-gray-500">
-                <InfoRow label="Email" value="Not available" />
-                <InfoRow label="Phone" value="Not available" />
+                <InfoRow label="Email" value={contactDetail?.email || "Not available"} />
+                <InfoRow label="Phone" value={contactDetail?.phone_number || "Not available"} />
                 <InfoRow label="Identifier" value={selected.meta?.sender?.identifier ?? "—"} mono />
                 <InfoRow label="Channel" value={selected.meta?.channel ?? "API"} />
               </div>
@@ -672,8 +680,8 @@ export default function MonitorPage() {
               <AccordionItem value="attrs" className="border-b border-gray-100">
                 <AccordionTrigger className="px-4 py-3 text-xs font-semibold text-gray-600 hover:no-underline">Contact Attributes</AccordionTrigger>
                 <AccordionContent className="px-4 pb-4 space-y-1.5 text-xs">
-                  <InfoRow label="Email" value="Not available" />
-                  <InfoRow label="Phone" value="Not available" />
+                  <InfoRow label="Email" value={contactDetail?.email || "Not available"} />
+                  <InfoRow label="Phone" value={contactDetail?.phone_number || "Not available"} />
                   <InfoRow label="Company" value="Not available" />
                   <InfoRow label="Location" value="Not available" />
                 </AccordionContent>

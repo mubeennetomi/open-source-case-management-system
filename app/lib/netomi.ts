@@ -128,39 +128,69 @@ export async function fetchAllConversations(
   ];
 }
 
-export async function fetchConversationLogs(
-  conversationId: string,
-  startTime: string,
-  endTime: string,
-  botRefIdOverride?: string
-): Promise<NetomiMessage[]> {
-  const baseUrl = process.env.NETOMI_BASE_URL;
-  const botRefId = botRefIdOverride || process.env.NETOMI_BOT_REF_ID;
-  const env = process.env.NETOMI_ENV;
+export interface ParsedWebhookMessage {
+  content: string;
+  type: "incoming" | "outgoing";
+  timestampMs: number;
+}
 
-  const response = await fetch(
-    `${baseUrl}/api/conversation-viewer/getConversationLogs`,
-    {
-      method: "POST",
-      headers: buildHeaders(),
-      body: JSON.stringify({
-        filters: {
-          conversationId,
-          startTime,
-          endTime,
-          env,
-          timeZone: "Asia/Kolkata",
-          botRefId,
-          channelType: "CHAT",
-        },
-      }),
-    }
-  );
+export interface WebhookVisitorInfo {
+  name?: string;
+  email?: string;
+}
+
+export async function fetchWebhookHistory(
+  conversationId: string,
+  botRefIdOverride?: string
+): Promise<{ messages: ParsedWebhookMessage[]; visitorInfo: WebhookVisitorInfo }> {
+  const botRefId = botRefIdOverride || process.env.NETOMI_BOT_REF_ID;
+
+  const response = await fetch("https://chatapps-us.netomi.com/api/v3/webhook-history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conversationId,
+      requestBody: { numberOfMessages: 500, numberOfDays: 30 },
+      botRefId,
+    }),
+  });
 
   if (!response.ok) {
-    throw new Error(`Netomi logs API error: ${response.status}`);
+    throw new Error(`Webhook history API error: ${response.status}`);
   }
 
-  const data: NetomiConversationLogsResponse = await response.json();
-  return data.payload;
+  const data = await response.json() as { conversationId: string; responses?: Array<Record<string, unknown>> };
+  const messages: ParsedWebhookMessage[] = [];
+  const visitorInfo: WebhookVisitorInfo = {};
+
+  for (const entry of data.responses ?? []) {
+    const triggerType = entry.triggerType as string;
+    const timestamp = entry.timestamp as number;
+
+    if (triggerType === "REQUEST") {
+      const reqPayload = entry.requestPayload as Record<string, unknown> | undefined;
+      const text = ((reqPayload?.messagePayload as Record<string, unknown>)?.text as string | undefined)?.trim();
+      if (!text) continue;
+
+      // Extract visitor info from custom attributes (first occurrence)
+      if (!visitorInfo.name && reqPayload?.additionalAttributes) {
+        const attrs = ((reqPayload.additionalAttributes as Record<string, unknown>).CUSTOM_ATTRIBUTES ?? []) as Array<{ name: string; value?: string }>;
+        visitorInfo.name = attrs.find(a => a.name === "visitor_name")?.value;
+        visitorInfo.email = attrs.find(a => a.name === "visitor_email")?.value;
+      }
+
+      messages.push({ content: text, type: "incoming", timestampMs: timestamp });
+    } else if (triggerType === "RESPONSE") {
+      const attachments = (entry.attachments ?? []) as Array<{ attachment?: { text?: string; attachmentResponseType?: string } }>;
+      const textParts = attachments
+        .filter(a => a.attachment?.text?.trim() && a.attachment.attachmentResponseType === "ANSWER_AI_RESPONSE")
+        .map(a => a.attachment!.text!.trim());
+      if (textParts.length === 0) continue;
+      messages.push({ content: textParts.join("\n\n"), type: "outgoing", timestampMs: timestamp });
+    }
+  }
+
+  messages.sort((a, b) => a.timestampMs - b.timestampMs);
+  console.log(`[netomi] webhook-history for ${conversationId}: fetched ${messages.length} messages, visitor=${visitorInfo.name ?? "unknown"}`);
+  return { messages, visitorInfo };
 }

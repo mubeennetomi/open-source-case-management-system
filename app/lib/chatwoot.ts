@@ -74,7 +74,8 @@ function normaliseContact(raw: unknown): ChaContact {
 export async function findOrCreateContact(
   identifier: string,
   name: string,
-  inboxId: number
+  inboxId: number,
+  email?: string
 ): Promise<ChaContact> {
   // Search by identifier
   const search = await request<{ payload: ChaContact[] | { contacts: ChaContact[] } }>(
@@ -89,15 +90,31 @@ export async function findOrCreateContact(
   const existing = contacts.find((c) => c.identifier === identifier);
   if (existing) {
     console.log(`[chatwoot] Found existing contact id=${existing.id} for identifier=${identifier}`);
+    // Update email if provided and contact doesn't have one
+    if (email && !(existing as unknown as Record<string, unknown>).email) {
+      await request(`/contacts/${existing.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ email }),
+      }).catch(() => {}); // non-fatal
+    }
     return existing;
   }
 
   // Create new contact
   console.log(`[chatwoot] Creating contact for identifier=${identifier}`);
-  const raw = await request<unknown>("/contacts", {
-    method: "POST",
-    body: JSON.stringify({ identifier, name }),
-  });
+  const body: Record<string, unknown> = { identifier, name };
+  if (email) body.email = email;
+  let raw: unknown;
+  try {
+    raw = await request<unknown>("/contacts", { method: "POST", body: JSON.stringify(body) });
+  } catch (e) {
+    if (email && String(e).includes("422")) {
+      // Email already taken by another contact — create without email
+      raw = await request<unknown>("/contacts", { method: "POST", body: JSON.stringify({ identifier, name }) });
+    } else {
+      throw e;
+    }
+  }
 
   const contact = normaliseContact(raw);
   console.log(`[chatwoot] Created contact id=${contact.id}`);

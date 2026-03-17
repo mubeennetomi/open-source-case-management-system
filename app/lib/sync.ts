@@ -1,4 +1,4 @@
-import { fetchAllConversations, fetchConversationLogs, NetomiConversationSummary } from "./netomi";
+import { fetchAllConversations, fetchWebhookHistory, NetomiConversationSummary } from "./netomi";
 import {
   findOrCreateContact,
   createConversation,
@@ -27,31 +27,22 @@ function visitorName(conversationId: string): string {
   return `Visitor #${num}`;
 }
 
-function messageTypeForNetomi(
-  type: string,
-): "incoming" | "outgoing" {
-  return type === "UserMessage" ? "incoming" : "outgoing";
-}
-
-function shouldSkipMessage(msg: { type: string; message: string }): boolean {
-  // Skip system carousel placeholders that aren't real text
-  const skipPatterns = ["PROACTIVE_GREETING"];
-  return skipPatterns.includes(msg.message);
-}
 
 async function syncSingleConversation(
   conv: NetomiConversationSummary,
   inboxId: number,
-  startTime: string,
-  endTime: string,
   botRefId?: string
 ): Promise<void> {
-  const name = visitorName(conv.conversationId);
+  // 1. Fetch messages from webhook-history (includes visitor info)
+  const { messages, visitorInfo } = await fetchWebhookHistory(conv.conversationId, botRefId);
 
-  // 1. Find or create Chatwoot contact
-  const contact = await findOrCreateContact(conv.conversationId, name, inboxId);
+  const name = visitorInfo.name || visitorName(conv.conversationId);
+  const email = visitorInfo.email;
 
-  // 2. Create conversation in Chatwoot
+  // 2. Find or create Chatwoot contact
+  const contact = await findOrCreateContact(conv.conversationId, name, inboxId, email);
+
+  // 3. Create conversation in Chatwoot
   const chaConv = await createConversation(inboxId, contact.id, {
     netomi_conversation_id: conv.conversationId,
     device_info: conv.deviceInfo,
@@ -61,20 +52,11 @@ async function syncSingleConversation(
     ended_at: conv.endTime,
   }, conv.startTime);
 
-  // 4. Fetch message logs from Netomi (use conversation's own time range)
-  const logs = await fetchConversationLogs(conv.conversationId, conv.startTime, conv.endTime, botRefId);
-
-  // 5. Push messages in order
-  for (const msg of logs) {
-    if (shouldSkipMessage(msg)) continue;
-
-    const content = msg.message || "(no content)";
-    const type = messageTypeForNetomi(msg.type);
-
-    await createMessage(chaConv.id, content, type, msg.time);
+  // 4. Push messages in order
+  for (const msg of messages) {
+    const isoTime = new Date(msg.timestampMs).toISOString();
+    await createMessage(chaConv.id, msg.content, msg.type, isoTime);
   }
-
-  // Leave conversation open in Chatwoot for agents to review
 }
 
 export async function runSync(
@@ -110,7 +92,7 @@ export async function runSync(
     }
 
     try {
-      await syncSingleConversation(conv, inboxId, startTime, endTime, botRefId);
+      await syncSingleConversation(conv, inboxId, botRefId);
       markAsSynced(conv.conversationId);
       progress.processed++;
     } catch (err) {
