@@ -38,13 +38,9 @@ export default function Home() {
   const [inboxes, setInboxes] = useState<Inbox[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState<SyncResult | null>(null);
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 90);
-    return d.toISOString().split("T")[0];
-  });
+  const [startDate, setStartDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
-  const [botRefId, setBotRefId] = useState(process.env.NEXT_PUBLIC_NETOMI_BOT_REF_ID || "");
+  const [botRefId, setBotRefId] = useState(process.env.NEXT_PUBLIC_NETOMI_BOT_REF_ID || "82a2461f-7c18-4981-883e-797e444bfdda");
   const [deleting, setDeleting] = useState(false);
 
   const loadState = useCallback(async () => {
