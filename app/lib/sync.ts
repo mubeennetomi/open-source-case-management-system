@@ -43,7 +43,7 @@ async function syncSingleConversation(
   const contact = await findOrCreateContact(conv.conversationId, name, inboxId, email);
 
   // If contact already existed, this conversation was previously synced — skip
-  if ((contact as Record<string, unknown>)._alreadyExisted) {
+  if ((contact as unknown as Record<string, unknown>)._alreadyExisted) {
     console.log(`[sync] Skipping ${conv.conversationId} — contact already exists in Chatwoot`);
     return;
   }
