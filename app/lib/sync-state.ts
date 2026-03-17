@@ -1,7 +1,7 @@
-import fs from "fs";
-import path from "path";
-
-const STATE_FILE = path.join(process.cwd(), "sync-state.json");
+// In-memory sync state — persists for the lifetime of the process.
+// On Vercel, this resets on each cold start, but deduplication is also
+// enforced by checking whether a contact with the same identifier already
+// exists in Chatwoot (see syncSingleConversation in sync.ts).
 
 interface SyncState {
   syncedConversationIds: string[];
@@ -9,36 +9,30 @@ interface SyncState {
   totalSynced: number;
 }
 
-function readState(): SyncState {
-  if (!fs.existsSync(STATE_FILE)) {
-    return { syncedConversationIds: [], lastSyncAt: null, totalSynced: 0 };
-  }
-  return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
-}
-
-function writeState(state: SyncState): void {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
+const state: SyncState = {
+  syncedConversationIds: [],
+  lastSyncAt: null,
+  totalSynced: 0,
+};
 
 export function isAlreadySynced(conversationId: string): boolean {
-  const state = readState();
   return state.syncedConversationIds.includes(conversationId);
 }
 
 export function markAsSynced(conversationId: string): void {
-  const state = readState();
   if (!state.syncedConversationIds.includes(conversationId)) {
     state.syncedConversationIds.push(conversationId);
     state.totalSynced = state.syncedConversationIds.length;
     state.lastSyncAt = new Date().toISOString();
-    writeState(state);
   }
 }
 
 export function getSyncState(): SyncState {
-  return readState();
+  return { ...state };
 }
 
 export function resetSyncState(): void {
-  writeState({ syncedConversationIds: [], lastSyncAt: null, totalSynced: 0 });
+  state.syncedConversationIds = [];
+  state.lastSyncAt = null;
+  state.totalSynced = 0;
 }

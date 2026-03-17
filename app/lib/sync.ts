@@ -42,6 +42,12 @@ async function syncSingleConversation(
   // 2. Find or create Chatwoot contact
   const contact = await findOrCreateContact(conv.conversationId, name, inboxId, email);
 
+  // If contact already existed, this conversation was previously synced — skip
+  if ((contact as Record<string, unknown>)._alreadyExisted) {
+    console.log(`[sync] Skipping ${conv.conversationId} — contact already exists in Chatwoot`);
+    return;
+  }
+
   // 3. Create conversation in Chatwoot
   const chaConv = await createConversation(inboxId, contact.id, {
     netomi_conversation_id: conv.conversationId,

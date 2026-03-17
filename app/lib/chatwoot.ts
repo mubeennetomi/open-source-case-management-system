@@ -90,14 +90,13 @@ export async function findOrCreateContact(
   const existing = contacts.find((c) => c.identifier === identifier);
   if (existing) {
     console.log(`[chatwoot] Found existing contact id=${existing.id} for identifier=${identifier}`);
-    // Update email if provided and contact doesn't have one
     if (email && !(existing as unknown as Record<string, unknown>).email) {
       await request(`/contacts/${existing.id}`, {
         method: "PUT",
         body: JSON.stringify({ email }),
-      }).catch(() => {}); // non-fatal
+      }).catch(() => {});
     }
-    return existing;
+    return { ...existing, _alreadyExisted: true } as ChaContact & { _alreadyExisted?: boolean };
   }
 
   // Create new contact
