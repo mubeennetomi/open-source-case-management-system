@@ -59,10 +59,11 @@ export async function fetchConversationList(
   startTime: string,
   endTime: string,
   pageNumber = 1,
-  pageSize = 100
+  pageSize = 100,
+  botRefIdOverride?: string
 ): Promise<NetomiConversationListResponse> {
   const baseUrl = process.env.NETOMI_BASE_URL;
-  const botRefId = process.env.NETOMI_BOT_REF_ID;
+  const botRefId = botRefIdOverride || process.env.NETOMI_BOT_REF_ID;
   const env = process.env.NETOMI_ENV;
 
   const response = await fetch(
@@ -107,16 +108,17 @@ export async function fetchConversationList(
 
 export async function fetchAllConversations(
   startTime: string,
-  endTime: string
+  endTime: string,
+  botRefIdOverride?: string
 ): Promise<NetomiConversationSummary[]> {
-  const firstPage = await fetchConversationList(startTime, endTime, 1, 100);
+  const firstPage = await fetchConversationList(startTime, endTime, 1, 100, botRefIdOverride);
   const { totalPages, conversationList } = firstPage.payload;
 
   if (totalPages <= 1) return conversationList;
 
   const remainingPages = await Promise.all(
     Array.from({ length: totalPages - 1 }, (_, i) =>
-      fetchConversationList(startTime, endTime, i + 2, 100)
+      fetchConversationList(startTime, endTime, i + 2, 100, botRefIdOverride)
     )
   );
 
@@ -129,10 +131,11 @@ export async function fetchAllConversations(
 export async function fetchConversationLogs(
   conversationId: string,
   startTime: string,
-  endTime: string
+  endTime: string,
+  botRefIdOverride?: string
 ): Promise<NetomiMessage[]> {
   const baseUrl = process.env.NETOMI_BASE_URL;
-  const botRefId = process.env.NETOMI_BOT_REF_ID;
+  const botRefId = botRefIdOverride || process.env.NETOMI_BOT_REF_ID;
   const env = process.env.NETOMI_ENV;
 
   const response = await fetch(

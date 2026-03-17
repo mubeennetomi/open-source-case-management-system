@@ -28,11 +28,9 @@ function visitorName(conversationId: string): string {
 }
 
 function messageTypeForNetomi(
-  generatedBy: string | null | undefined
+  type: string,
 ): "incoming" | "outgoing" {
-  // USER messages → incoming (from user's perspective)
-  // SYSTEM / BOT messages → outgoing
-  return generatedBy === "USER" ? "incoming" : "outgoing";
+  return type === "UserMessage" ? "incoming" : "outgoing";
 }
 
 function shouldSkipMessage(msg: { type: string; message: string }): boolean {
@@ -45,7 +43,8 @@ async function syncSingleConversation(
   conv: NetomiConversationSummary,
   inboxId: number,
   startTime: string,
-  endTime: string
+  endTime: string,
+  botRefId?: string
 ): Promise<void> {
   const name = visitorName(conv.conversationId);
 
@@ -60,31 +59,29 @@ async function syncSingleConversation(
     browser: conv.browserInfo,
     started_at: conv.startTime,
     ended_at: conv.endTime,
-  });
+  }, conv.startTime);
 
-  // 4. Fetch message logs from Netomi
-  const logs = await fetchConversationLogs(conv.conversationId, startTime, endTime);
+  // 4. Fetch message logs from Netomi (use conversation's own time range)
+  const logs = await fetchConversationLogs(conv.conversationId, conv.startTime, conv.endTime, botRefId);
 
   // 5. Push messages in order
   for (const msg of logs) {
     if (shouldSkipMessage(msg)) continue;
 
     const content = msg.message || "(no content)";
-    const type = messageTypeForNetomi(msg.generatedBy);
+    const type = messageTypeForNetomi(msg.type);
 
     await createMessage(chaConv.id, content, type, msg.time);
   }
 
-  // 6. Resolve if the Netomi conversation is complete
-  if (conv.isComplete) {
-    await resolveConversation(chaConv.id);
-  }
+  // Leave conversation open in Chatwoot for agents to review
 }
 
 export async function runSync(
   startTime: string,
   endTime: string,
-  onProgress?: (p: SyncProgress) => void
+  onProgress?: (p: SyncProgress) => void,
+  botRefId?: string
 ): Promise<SyncResult> {
   const inboxId = parseInt(process.env.CHATWOOT_INBOX_ID || "0");
   if (!inboxId) {
@@ -92,7 +89,7 @@ export async function runSync(
   }
 
   const start = Date.now();
-  const conversations = await fetchAllConversations(startTime, endTime);
+  const conversations = await fetchAllConversations(startTime, endTime, botRefId);
 
   const progress: SyncProgress = {
     total: conversations.length,
@@ -113,7 +110,7 @@ export async function runSync(
     }
 
     try {
-      await syncSingleConversation(conv, inboxId, startTime, endTime);
+      await syncSingleConversation(conv, inboxId, startTime, endTime, botRefId);
       markAsSynced(conv.conversationId);
       progress.processed++;
     } catch (err) {

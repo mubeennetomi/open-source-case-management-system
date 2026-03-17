@@ -50,14 +50,18 @@ export interface ChaContact {
   contact_inboxes: { source_id: string; inbox: { id: number } }[];
 }
 
-// Normalise a raw API response to a ChaContact — handles both top-level and
-// payload-wrapped shapes that different Chatwoot versions return.
+// Normalise a raw API response to a ChaContact — handles multiple wrapping shapes.
 function normaliseContact(raw: unknown): ChaContact {
   const obj = raw as Record<string, unknown>;
 
-  // Wrapped: { payload: { id, ... } }
-  if (obj.payload && typeof obj.payload === "object" && !Array.isArray(obj.payload)) {
-    return obj.payload as ChaContact;
+  // { payload: { contact: { id, ... } } }
+  if (obj.payload && typeof obj.payload === "object") {
+    const payload = obj.payload as Record<string, unknown>;
+    if (payload.contact && typeof payload.contact === "object") {
+      return payload.contact as ChaContact;
+    }
+    // { payload: { id, ... } }
+    if (payload.id) return payload as unknown as ChaContact;
   }
 
   // Direct: { id, name, ... }
@@ -147,15 +151,20 @@ export interface ChaConversation {
 export async function createConversation(
   inboxId: number,
   contactId: number,
-  additionalAttributes: Record<string, unknown> = {}
+  additionalAttributes: Record<string, unknown> = {},
+  createdAt?: string
 ): Promise<ChaConversation> {
+  const body: Record<string, unknown> = {
+    inbox_id: inboxId,
+    contact_id: contactId,
+    additional_attributes: additionalAttributes,
+  };
+  if (createdAt) {
+    body.created_at = Math.floor(new Date(createdAt).getTime() / 1000);
+  }
   const raw = await request<unknown>(`/conversations`, {
     method: "POST",
-    body: JSON.stringify({
-      inbox_id: inboxId,
-      contact_id: contactId,
-      additional_attributes: additionalAttributes,
-    }),
+    body: JSON.stringify(body),
   });
 
   // Handle possible payload wrapping
@@ -178,6 +187,33 @@ export async function resolveConversation(conversationId: number): Promise<void>
   });
 }
 
+export async function deleteConversation(conversationId: number): Promise<void> {
+  const url = `${BASE_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${conversationId}`;
+  const res = await fetch(url, { method: "DELETE", headers: headers() });
+  if (!res.ok && res.status !== 404) {
+    const body = await res.text();
+    throw new Error(`Chatwoot delete error ${res.status}: ${body}`);
+  }
+}
+
+export async function listAllConversationIds(inboxId: number): Promise<number[]> {
+  const ids: number[] = [];
+  let page = 1;
+  while (true) {
+    const data = await request<{ data?: { meta?: unknown; payload?: unknown[] }; payload?: unknown[] }>(
+      `/conversations?inbox_id=${inboxId}&page=${page}`
+    );
+    const items = (data as Record<string, unknown>).data
+      ? ((data as Record<string, unknown>).data as Record<string, unknown>).payload as { id: number }[]
+      : (data as Record<string, unknown>).payload as { id: number }[];
+    if (!items || items.length === 0) break;
+    ids.push(...items.map((c) => c.id));
+    if (items.length < 25) break; // Chatwoot default page size is 25
+    page++;
+  }
+  return ids;
+}
+
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 export async function createMessage(
@@ -194,12 +230,12 @@ export async function createMessage(
 
   if (createdAt) {
     body.created_at = Math.floor(new Date(createdAt).getTime() / 1000);
+    // Also store in content_attributes as fallback since Chatwoot cloud may ignore created_at
+    body.content_attributes = { original_time: createdAt };
   }
 
-  const result = await request<{ id: number; message_type: number }>(`/conversations/${conversationId}/messages`, {
+  await request<{ id: number; message_type: number }>(`/conversations/${conversationId}/messages`, {
     method: "POST",
     body: JSON.stringify(body),
   });
-
-  console.log(`[chatwoot] Message created: sent type=${body.message_type}, got back type=${result?.message_type}`);
 }

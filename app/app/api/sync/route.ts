@@ -7,9 +7,10 @@ export async function POST(req: NextRequest) {
     const {
       startTime = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(), // 90 days ago
       endTime = new Date().toISOString(),
+      botRefId,
     } = body;
 
-    const result = await runSync(startTime, endTime);
+    const result = await runSync(startTime, endTime, undefined, botRefId);
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

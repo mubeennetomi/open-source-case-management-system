@@ -44,6 +44,8 @@ export default function Home() {
     return d.toISOString().split("T")[0];
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [botRefId, setBotRefId] = useState(process.env.NEXT_PUBLIC_NETOMI_BOT_REF_ID || "");
+  const [deleting, setDeleting] = useState(false);
 
   const loadState = useCallback(async () => {
     const res = await fetch("/api/state");
@@ -73,6 +75,7 @@ export default function Home() {
         body: JSON.stringify({
           startTime: `${startDate}T00:00:00.000Z`,
           endTime: `${endDate}T23:59:59.999Z`,
+          ...(botRefId ? { botRefId } : {}),
         }),
       });
       const data = await res.json();
@@ -87,6 +90,26 @@ export default function Home() {
       toast.error("Network error during sync");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function deleteAll() {
+    if (!confirm("Delete ALL conversations from Chatwoot and reset sync state? This cannot be undone.")) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/delete-all", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Delete failed");
+      } else {
+        toast.success(`Deleted ${data.deleted} conversations`);
+        await loadState();
+        setResult(null);
+      }
+    } catch {
+      toast.error("Network error during delete");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -172,36 +195,52 @@ export default function Home() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Date Range</CardTitle>
+                <CardTitle className="text-base">Sync Settings</CardTitle>
                 <CardDescription>
                   Fetch Netomi conversations within this window
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-wrap gap-4 items-end">
+              <CardContent className="space-y-4">
                 <div className="space-y-1">
-                  <label className="text-sm font-medium">Start Date</label>
+                  <label className="text-sm font-medium">Bot Ref ID</label>
                   <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                    type="text"
+                    value={botRefId}
+                    onChange={(e) => setBotRefId(e.target.value)}
+                    placeholder="e.g. 2a8f4141-50c0-4071-a45d-bd2f2fc229f3"
+                    className="flex h-9 w-full max-w-md rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm font-mono"
                   />
+                  <p className="text-xs text-muted-foreground">Leave blank to use the value from environment variables</p>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium">End Date</label>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
-                  />
+                <div className="flex flex-wrap gap-4 items-end">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium">Start Date</label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium">End Date</label>
+                    <input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                    />
+                  </div>
+                  <Button onClick={runSync} disabled={syncing || deleting} className="min-w-28">
+                    {syncing ? "Syncing..." : "Run Sync"}
+                  </Button>
+                  <Button variant="outline" onClick={resetSync} disabled={syncing || deleting}>
+                    Reset State
+                  </Button>
+                  <Button variant="destructive" onClick={deleteAll} disabled={syncing || deleting}>
+                    {deleting ? "Deleting..." : "Delete All Conversations"}
+                  </Button>
                 </div>
-                <Button onClick={runSync} disabled={syncing} className="min-w-28">
-                  {syncing ? "Syncing..." : "Run Sync"}
-                </Button>
-                <Button variant="outline" onClick={resetSync} disabled={syncing}>
-                  Reset State
-                </Button>
               </CardContent>
             </Card>
 

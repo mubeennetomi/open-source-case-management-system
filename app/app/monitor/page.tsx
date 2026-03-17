@@ -15,16 +15,44 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 interface Conversation {
   id: number; status: string; created_at: number; labels: string[];
   assignee?: Agent | null;
+  additional_attributes?: { started_at?: string; ended_at?: string; netomi_conversation_id?: string };
   meta: { sender: { id: number; name: string; identifier: string }; channel: string };
 }
 interface Message {
   id: number; content: string; message_type: number;
   created_at: number; private: boolean; sender?: { name: string; type: string };
+  content_attributes?: { original_time?: string };
 }
 interface Agent { id: number; name: string; email: string; }
 interface Profile { id: number; name: string; email: string; }
 
 type Tab = "all" | "assigned" | "unassigned";
+
+// ── Filter types ───────────────────────────────────────────────────────────────
+const FILTER_ATTRIBUTES = [
+  { key: "status",            label: "Status",                  type: "select",   options: ["open","resolved","pending","snoozed"] },
+  { key: "priority",          label: "Priority",                type: "select",   options: ["none","low","medium","high","urgent"] },
+  { key: "assignee_id",       label: "Assignee",                type: "agent" },
+  { key: "inbox_id",          label: "Inbox",                   type: "text" },
+  { key: "team_id",           label: "Team",                    type: "text" },
+  { key: "id",                label: "Conversation Identifier", type: "text" },
+  { key: "campaign_id",       label: "Campaign",                type: "text" },
+  { key: "labels",            label: "Labels",                  type: "text" },
+  { key: "browser_language",  label: "Browser Language",        type: "text" },
+  { key: "referer",           label: "Referer Link",            type: "text" },
+  { key: "created_at",        label: "Created At",              type: "date" },
+  { key: "last_activity_at",  label: "Last Activity",           type: "date" },
+] as const;
+
+const OPERATORS_FOR: Record<string, { key: string; label: string }[]> = {
+  select: [{ key: "equal_to", label: "Equal to" }, { key: "not_equal_to", label: "Not equal to" }],
+  agent:  [{ key: "equal_to", label: "Equal to" }, { key: "not_equal_to", label: "Not equal to" }],
+  text:   [{ key: "equal_to", label: "Equal to" }, { key: "not_equal_to", label: "Not equal to" }, { key: "contains", label: "Contains" }, { key: "does_not_contain", label: "Does not contain" }, { key: "is_present", label: "Is present" }, { key: "is_not_present", label: "Is not present" }],
+  date:   [{ key: "is_greater_than", label: "After" }, { key: "is_less_than", label: "Before" }, { key: "days_before", label: "Days before" }],
+};
+
+interface FilterRow { attribute: string; operator: string; value: string; }
+function defaultRow(): FilterRow { return { attribute: "status", operator: "equal_to", value: "open" }; }
 
 const AVATAR_COLORS = [
   "bg-violet-100 text-violet-700",
@@ -44,6 +72,16 @@ function avatarColor(name: string) {
 
 function fmt(ts: number) {
   return new Date(ts * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function fmtMsg(msg: Message) {
+  const orig = msg.content_attributes?.original_time;
+  if (orig) return new Date(orig).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return fmt(msg.created_at);
+}
+function fmtConv(conv: Conversation) {
+  const orig = conv.additional_attributes?.started_at;
+  if (orig) return new Date(orig).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return fmt(conv.created_at);
 }
 function initials(name: string) {
   return (name || "V").split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
@@ -77,6 +115,10 @@ export default function MonitorPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [participantAgentId, setParticipantAgentId] = useState("");
+  // Filter state
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterRows, setFilterRows] = useState<FilterRow[]>([defaultRow()]);
+  const [activeFilters, setActiveFilters] = useState<FilterRow[] | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   function scrollToBottom() {
@@ -94,17 +136,44 @@ export default function MonitorPage() {
   }, []);
 
   // Load conversations for tab
-  const loadConvs = useCallback((t: Tab) => {
+  const loadConvs = useCallback((t: Tab, filters: FilterRow[] | null = null) => {
     setLoading(true);
-    const at = t === "all" ? "all" : t === "assigned" ? "assigned" : "unassigned";
-    fetch(`/api/conversations?assignee_type=${at}`)
-      .then(r => r.json())
-      .then(data => {
-        const list: Conversation[] = data?.data?.payload ?? [];
+    if (filters && filters.length > 0) {
+      const payload = filters.map((f, i) => {
+        const attr = FILTER_ATTRIBUTES.find(a => a.key === f.attribute);
+        const noValue = ["is_present","is_not_present"].includes(f.operator);
+        let values: (string | number)[] = noValue ? [] : [f.value];
+        // numeric fields
+        if (["assignee_id","inbox_id","team_id","id","campaign_id"].includes(f.attribute) && !noValue) {
+          values = [Number(f.value)];
+        }
+        return {
+          attribute_key: f.attribute,
+          filter_operator: f.operator,
+          values,
+          query_operator: i < filters.length - 1 ? "AND" : null,
+          ...(attr?.type === "date" ? {} : {}),
+        };
+      });
+      fetch("/api/conversations/filter", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload }),
+      }).then(r => r.json()).then(data => {
+        const list: Conversation[] = data?.data?.payload ?? data?.payload ?? [];
         setConversations(list);
         if (list.length > 0) setSelected(s => s ?? list[0]);
-      })
-      .finally(() => setLoading(false));
+      }).finally(() => setLoading(false));
+    } else {
+      const at = t === "all" ? "all" : t === "assigned" ? "assigned" : "unassigned";
+      fetch(`/api/conversations?assignee_type=${at}`)
+        .then(r => r.json())
+        .then(data => {
+          const list: Conversation[] = data?.data?.payload ?? [];
+          setConversations(list);
+          if (list.length > 0) setSelected(s => s ?? list[0]);
+        })
+        .finally(() => setLoading(false));
+    }
   }, []);
 
   // Load tab counts
@@ -122,7 +191,7 @@ export default function MonitorPage() {
     });
   }, []);
 
-  useEffect(() => { loadConvs(tab); }, [tab, loadConvs]);
+  useEffect(() => { loadConvs(tab, activeFilters); }, [tab, activeFilters, loadConvs]);
 
   // Load messages
   useEffect(() => {
@@ -287,9 +356,81 @@ export default function MonitorPage() {
             })}
           </div>
         </div>
-        <div className="px-3 py-2 border-b border-gray-100">
-          <input type="text" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)}
-            className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-xs outline-none focus:border-gray-400 bg-gray-50" />
+        <div className="px-3 py-2 border-b border-gray-100 space-y-2">
+          <div className="flex gap-1.5">
+            <input type="text" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)}
+              className="flex-1 rounded-md border border-gray-200 px-3 py-1.5 text-xs outline-none focus:border-gray-400 bg-gray-50" />
+            <button onClick={() => setFilterOpen(o => !o)}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-md border text-xs transition-colors ${activeFilters ? "border-amber-400 bg-amber-50 text-amber-700" : "border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300"}`}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h10M3 6h6M5 9h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+              {activeFilters ? "Filtered" : "Filter"}
+            </button>
+          </div>
+
+          {/* Filter panel */}
+          {filterOpen && (
+            <div className="rounded-md border border-gray-200 bg-white shadow-sm p-3 space-y-2">
+              <p className="text-xs font-medium text-gray-600">Filter conversations</p>
+              {filterRows.map((row, i) => {
+                const attr = FILTER_ATTRIBUTES.find(a => a.key === row.attribute)!;
+                const attrType = attr?.type ?? "text";
+                const ops = OPERATORS_FOR[attrType] ?? OPERATORS_FOR.text;
+                const noValue = ["is_present","is_not_present"].includes(row.operator);
+                return (
+                  <div key={i} className="space-y-1 pb-2 border-b border-gray-100 last:border-0 last:pb-0">
+                    {/* Row 1: attribute + remove */}
+                    <div className="flex gap-1 items-center">
+                      <select value={row.attribute} onChange={e => {
+                        const newAttr = FILTER_ATTRIBUTES.find(a => a.key === e.target.value)!;
+                        const newOps = OPERATORS_FOR[newAttr?.type ?? "text"];
+                        setFilterRows(p => p.map((r,j) => j===i ? { ...r, attribute: e.target.value, operator: newOps[0].key, value: "" } : r));
+                      }} className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 bg-white focus:outline-none focus:border-gray-400">
+                        {FILTER_ATTRIBUTES.map(a => <option key={a.key} value={a.key}>{a.label}</option>)}
+                      </select>
+                      {filterRows.length > 1 && (
+                        <button onClick={() => setFilterRows(p => p.filter((_,j) => j!==i))} className="text-gray-300 hover:text-red-400 shrink-0">
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                        </button>
+                      )}
+                    </div>
+                    {/* Row 2: operator + value */}
+                    <div className="flex gap-1">
+                      <select value={row.operator} onChange={e => setFilterRows(p => p.map((r,j) => j===i ? { ...r, operator: e.target.value } : r))}
+                        className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 bg-white focus:outline-none focus:border-gray-400">
+                        {ops.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                      </select>
+                      {!noValue && attrType === "select" && "options" in attr ? (
+                        <select value={row.value} onChange={e => setFilterRows(p => p.map((r,j) => j===i ? { ...r, value: e.target.value } : r))}
+                          className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 bg-white focus:outline-none focus:border-gray-400">
+                          {(attr.options as readonly string[]).map(o => <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>)}
+                        </select>
+                      ) : !noValue && attrType === "agent" ? (
+                        <select value={row.value} onChange={e => setFilterRows(p => p.map((r,j) => j===i ? { ...r, value: e.target.value } : r))}
+                          className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 bg-white focus:outline-none focus:border-gray-400">
+                          <option value="">Select agent</option>
+                          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      ) : !noValue && attrType === "date" ? (
+                        <input type="date" value={row.value} onChange={e => setFilterRows(p => p.map((r,j) => j===i ? { ...r, value: e.target.value } : r))}
+                          className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:border-gray-400" />
+                      ) : !noValue ? (
+                        <input type="text" value={row.value} placeholder="Value" onChange={e => setFilterRows(p => p.map((r,j) => j===i ? { ...r, value: e.target.value } : r))}
+                          className="flex-1 text-xs border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:border-gray-400" />
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={() => setFilterRows(p => [...p, defaultRow()])}
+                className="text-xs text-amber-600 hover:text-amber-700 font-medium">+ Add filter</button>
+              <div className="flex gap-2 pt-1">
+                <button onClick={() => { setActiveFilters(null); setFilterRows([defaultRow()]); setFilterOpen(false); }}
+                  className="flex-1 text-xs border border-gray-200 rounded py-1.5 text-gray-500 hover:bg-gray-50 transition-colors">Clear filters</button>
+                <button onClick={() => { setActiveFilters([...filterRows]); setFilterOpen(false); }}
+                  className="flex-1 text-xs bg-amber-500 hover:bg-amber-600 text-white rounded py-1.5 font-medium transition-colors">Apply filters</button>
+              </div>
+            </div>
+          )}
         </div>
         <ScrollArea className="flex-1">
           {loading ? <p className="text-center text-xs text-gray-400 pt-10">Loading…</p>
@@ -304,7 +445,7 @@ export default function MonitorPage() {
                       <span className="font-medium text-gray-700 text-xs truncate">{conv.meta?.sender?.name ?? "Visitor"}</span>
                       <StatusBadge status={conv.status} />
                     </div>
-                    <p className="text-[10px] text-gray-400">{fmt(conv.created_at)}</p>
+                    <p className="text-[10px] text-gray-400">{fmtConv(conv)}</p>
                     {conv.assignee && <p className="text-[10px] text-gray-400 mt-0.5">↳ {conv.assignee.name}</p>}
                   </div>
                 </div>
@@ -321,7 +462,7 @@ export default function MonitorPage() {
               <Avatar className="h-8 w-8 shrink-0"><AvatarFallback className={`text-sm ${avatarColor(selected.meta?.sender?.name ?? "")}`}>{initials(selected.meta?.sender?.name ?? "V#")}</AvatarFallback></Avatar>
               <div>
                 <h1 className="font-semibold text-gray-800">{selected.meta?.sender?.name ?? "Visitor"}</h1>
-                <p className="text-xs text-gray-400">#{selected.id} · {fmt(selected.created_at)}</p>
+                <p className="text-xs text-gray-400">#{selected.id} · {fmtConv(selected)}</p>
               </div>
               <div className="ml-auto flex items-center gap-2">
                 {/* Resolve + dropdown */}
@@ -520,7 +661,7 @@ export default function MonitorPage() {
                 <AccordionTrigger className="px-4 py-3 text-xs font-semibold text-gray-600 hover:no-underline">Conversation Information</AccordionTrigger>
                 <AccordionContent className="px-4 pb-4 space-y-1.5 text-xs">
                   <InfoRow label="ID" value={`#${selected.id}`} />
-                  <InfoRow label="Created" value={fmt(selected.created_at)} />
+                  <InfoRow label="Created" value={fmtConv(selected)} />
                   <InfoRow label="Status" value={selected.status} />
                   <InfoRow label="Inbox" value="Netomi Bot Conversations" />
                   <InfoRow label="Assignee" value={selected.assignee?.name ?? "Unassigned"} />
@@ -671,7 +812,7 @@ function ChatMsg({ msg, isUser }: { msg: Message; isUser: boolean }) {
       )}
       <div className={`max-w-[68%] rounded-2xl px-4 py-2.5 ${isUser ? "bg-slate-700 text-white rounded-br-sm" : "bg-white border border-gray-200 text-gray-700 rounded-bl-sm shadow-sm"}`}>
         <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
-        <p className={`text-[10px] mt-1 ${isUser ? "text-slate-300 text-right" : "text-gray-400"}`}>{fmt(msg.created_at)}</p>
+        <p className={`text-[10px] mt-1 ${isUser ? "text-slate-300 text-right" : "text-gray-400"}`}>{fmtMsg(msg)}</p>
       </div>
       {isUser && <div className="h-6 w-6 shrink-0 rounded-full bg-slate-200 flex items-center justify-center mb-1 text-[9px] text-slate-600 font-bold">U</div>}
     </div>
@@ -684,7 +825,7 @@ function NoteMsg({ msg }: { msg: Message }) {
       <div className="max-w-[80%] rounded-xl bg-amber-50 border border-amber-200 border-dashed px-4 py-2.5">
         <p className="text-[10px] font-semibold text-amber-600 mb-1">Private Note · {msg.sender?.name ?? "Agent"}</p>
         <p className="text-xs text-amber-900 whitespace-pre-wrap break-words">{msg.content}</p>
-        <p className="text-[10px] text-amber-400 mt-1">{fmt(msg.created_at)}</p>
+        <p className="text-[10px] text-amber-400 mt-1">{fmtMsg(msg)}</p>
       </div>
     </div>
   );
@@ -693,7 +834,7 @@ function NoteMsg({ msg }: { msg: Message }) {
 function ActivityMsg({ msg }: { msg: Message }) {
   return (
     <div className="flex justify-center">
-      <span className="text-[10px] text-gray-400 bg-white border border-gray-100 px-3 py-1 rounded-full">{msg.content} · {fmt(msg.created_at)}</span>
+      <span className="text-[10px] text-gray-400 bg-white border border-gray-100 px-3 py-1 rounded-full">{msg.content} · {fmtMsg(msg)}</span>
     </div>
   );
 }
