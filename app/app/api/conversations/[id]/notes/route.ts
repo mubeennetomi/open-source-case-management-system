@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 const BASE = process.env.CHATWOOT_BASE_URL!;
 const ACCOUNT = process.env.CHATWOOT_ACCOUNT_ID!;
 const TOKEN = process.env.CHATWOOT_API_TOKEN!;
