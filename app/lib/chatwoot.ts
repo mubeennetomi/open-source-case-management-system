@@ -196,6 +196,26 @@ export async function createConversation(
   return conv;
 }
 
+// Find the open conversation for a contact in a given inbox, or create one.
+export async function findOrCreateConversation(
+  contactId: number,
+  inboxId: number,
+  netomiConversationId: string,
+  additionalAttributes: Record<string, unknown> = {}
+): Promise<ChaConversation> {
+  const data = await request<{ payload?: { conversations?: ChaConversation[] } }>(
+    `/contacts/${contactId}/conversations`
+  );
+  const convs: ChaConversation[] = data?.payload?.conversations ?? [];
+  const existing = convs.find(c => c.inbox_id === inboxId && c.status === "open");
+  if (existing) return existing;
+
+  return createConversation(inboxId, contactId, {
+    netomi_conversation_id: netomiConversationId,
+    ...additionalAttributes,
+  });
+}
+
 export async function resolveConversation(conversationId: number): Promise<void> {
   await request(`/conversations/${conversationId}/toggle_status`, {
     method: "POST",
