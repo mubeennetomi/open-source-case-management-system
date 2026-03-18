@@ -183,8 +183,8 @@ export async function fetchWebhookHistory(
     } else if (triggerType === "RESPONSE") {
       const attachments = (entry.attachments ?? []) as Array<{ attachment?: { text?: string; attachmentResponseType?: string } }>;
       const textParts = attachments
-        .filter(a => a.attachment?.text?.trim() && a.attachment.attachmentResponseType === "ANSWER_AI_RESPONSE")
-        .map(a => a.attachment!.text!.trim());
+        .map(a => a.attachment?.text?.replace(/<[^>]*>/g, "").trim())
+        .filter((t): t is string => !!t);
       if (textParts.length === 0) continue;
       messages.push({ content: textParts.join("\n\n"), type: "outgoing", timestampMs: timestamp });
     }

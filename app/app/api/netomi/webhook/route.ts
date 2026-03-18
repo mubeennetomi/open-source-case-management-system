@@ -48,8 +48,8 @@ export async function POST(req: NextRequest) {
         attachment?: { text?: string; attachmentResponseType?: string };
       }>;
       const textParts = attachments
-        .filter(a => a.attachment?.text?.trim() && a.attachment.attachmentResponseType === "ANSWER_AI_RESPONSE")
-        .map(a => a.attachment!.text!.trim());
+        .map(a => a.attachment?.text?.replace(/<[^>]*>/g, "").trim())
+        .filter((t): t is string => !!t);
 
       console.log(`[webhook] RESPONSE attachments=${attachments.length} textParts=${textParts.length}`);
       if (textParts.length === 0) return NextResponse.json({ ok: true });
