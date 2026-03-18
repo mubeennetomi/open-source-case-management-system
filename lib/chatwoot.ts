@@ -266,7 +266,8 @@ export async function createMessage(
   conversationId: number,
   content: string,
   messageType: "incoming" | "outgoing",
-  createdAt?: string
+  createdAt?: string,
+  ownerType?: string
 ): Promise<void> {
   const body: Record<string, unknown> = {
     content,
@@ -274,14 +275,33 @@ export async function createMessage(
     private: false,
   };
 
+  const contentAttributes: Record<string, unknown> = {};
   if (createdAt) {
     body.created_at = Math.floor(new Date(createdAt).getTime() / 1000);
-    // Also store in content_attributes as fallback since Chatwoot cloud may ignore created_at
-    body.content_attributes = { original_time: createdAt };
+    contentAttributes.original_time = createdAt;
+  }
+  if (ownerType) {
+    contentAttributes.ownerType = ownerType;
+  }
+  if (Object.keys(contentAttributes).length > 0) {
+    body.content_attributes = contentAttributes;
   }
 
+  console.log(`[chatwoot] Creating message in conversation ${conversationId} with content=`,JSON.stringify(body));
   await request<{ id: number; message_type: number }>(`/conversations/${conversationId}/messages`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+// ── Custom Attributes ────────────────────────────────────────────────────────
+
+export async function setCustomAttributes(
+  conversationId: number,
+  customAttributes: Record<string, unknown>
+): Promise<void> {
+  await request(`/conversations/${conversationId}/custom_attributes`, {
+    method: "POST",
+    body: JSON.stringify({ custom_attributes: customAttributes }),
   });
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findOrCreateContact, findOrCreateConversation, createMessage } from "@/lib/chatwoot";
+import { findOrCreateContact, findOrCreateConversation, createMessage, setCustomAttributes } from "@/lib/chatwoot";
 
 const INBOX_ID = parseInt(process.env.CHATWOOT_INBOX_ID || "0");
 
@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
     let timestampMs: number = Date.now();
     let visitorNameStr: string | undefined;
     let email: string | undefined;
+    const ownerType = payload.ownerType as string | undefined;
 
     if (triggerType === "RESPONSE") {
       // ── Bot response ───────────────────────────────────────────────────────
@@ -87,13 +88,48 @@ export async function POST(req: NextRequest) {
 
     const contact = await findOrCreateContact(conversationId, name, INBOX_ID, email);
     const conv = await findOrCreateConversation(contact.id, INBOX_ID, conversationId);
-    await createMessage(conv.id, content!, messageType, isoTime);
+    console.log(`[webhook] creating message in conv=${conv.id} (${conversationId}) with content="${content.substring(0, 60)}" at ${isoTime}`);
+    await createMessage(conv.id, content!, messageType, isoTime, ownerType);
 
     console.log(`[webhook] ${messageType} → conv=${conv.id} (${conversationId}): "${content!.substring(0, 60)}"`);
     return NextResponse.json({ ok: true });
 
   } catch (err) {
     console.error("[webhook] Error:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
+export async function PUT(req: NextRequest) {
+  try {
+    const raw = await req.json() as Record<string, unknown>;
+
+    const payload = (raw.body && typeof raw.body === "object" && !Array.isArray(raw.body))
+      ? raw.body as Record<string, unknown>
+      : raw;
+
+    const reqPayload = payload.requestPayload as Record<string, unknown> | undefined;
+    const conversationId = (reqPayload?.conversationId ?? payload.conversationId) as string | undefined;
+
+    if (!conversationId) {
+      return NextResponse.json({ error: "Missing conversationId" }, { status: 400 });
+    }
+
+    const attrs = extractAttrs(reqPayload ?? payload);
+    const visitorNameStr = getCustomAttr(attrs, "visitor_name");
+    const email = getCustomAttr(attrs, "visitor_email");
+    const name = visitorNameStr || fallbackName(conversationId);
+
+    const contact = await findOrCreateContact(conversationId, name, INBOX_ID, email);
+    const conv = await findOrCreateConversation(contact.id, INBOX_ID, conversationId);
+
+    await setCustomAttributes(conv.id, { handed_off: true });
+
+    console.log(`[webhook:handoff] Set handed_off=true on conv=${conv.id} (${conversationId})`);
+    return NextResponse.json({ ok: true });
+
+  } catch (err) {
+    console.error("[webhook:handoff] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

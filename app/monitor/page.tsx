@@ -21,7 +21,7 @@ interface Conversation {
 interface Message {
   id: number; content: string; message_type: number;
   created_at: number; private: boolean; sender?: { name: string; type: string };
-  content_attributes?: { original_time?: string };
+  content_attributes?: { original_time?: string; sender?: string };
 }
 interface Agent { id: number; name: string; email: string; }
 interface Profile { id: number; name: string; email: string; }
@@ -106,6 +106,9 @@ export default function MonitorPage() {
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const [noteText, setNoteText] = useState("");
+  const [replyText, setReplyText] = useState("");
+  const [inputTab, setInputTab] = useState<"note" | "reply">("reply");
+  const [handedOff, setHandedOff] = useState(false);
   const [labelInput, setLabelInput] = useState("");
   const [transcriptEmail, setTranscriptEmail] = useState("");
   // Modals
@@ -199,6 +202,18 @@ export default function MonitorPage() {
     if (!selected) return;
     setContactDetail(null);
     setLoadingMsgs(true);
+    setHandedOff(false);
+    setInputTab("note");
+    // Fetch conversation detail for handed_off status
+    fetch(`/api/conversations/${selected.id}`)
+      .then(r => r.json())
+      .then(data => {
+        const ho = data?.custom_attributes?.handed_off === true;
+        console.log(`[init] conversation=${selected.id} custom_attributes.handed_off=${ho}`);
+        setHandedOff(ho);
+        if (ho) setInputTab("reply");
+      })
+      .catch(() => {});
     fetch(`/api/conversations/${selected.id}/messages`)
       .then(r => r.json())
       .then(data => setMessages((data?.payload ?? []).sort((a: Message, b: Message) => a.created_at - b.created_at)))
@@ -221,6 +236,38 @@ export default function MonitorPage() {
         });
     }
   }, [selected]);
+
+  // Poll messages and conversation details for selected conversation every 5s
+  useEffect(() => {
+    if (!selected) return;
+    const interval = setInterval(() => {
+      fetch(`/api/conversations/${selected.id}/messages`)
+        .then(r => r.json())
+        .then(data => {
+          const fresh: Message[] = (data?.payload ?? []).sort((a: Message, b: Message) => a.created_at - b.created_at);
+          setMessages(prev => {
+            const lastPrev = prev[prev.length - 1]?.id;
+            const lastFresh = fresh[fresh.length - 1]?.id;
+            if (lastPrev === lastFresh && prev.length === fresh.length) return prev;
+            scrollToBottom();
+            return fresh;
+          });
+        })
+        .catch(() => {});
+
+      fetch(`/api/conversations/${selected.id}`)
+        .then(r => r.json())
+        .then(data => {
+          const ho = data?.custom_attributes?.handed_off === true;
+          console.log(`[poll] conversation=${selected.id} custom_attributes.handed_off=${ho}`);
+          setHandedOff(ho);
+          if (!ho) setInputTab("note");
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [selected]);
+
 
   async function setStatus(status: string) {
     if (!selected) return;
@@ -282,6 +329,19 @@ export default function MonitorPage() {
     const msg = await res.json();
     if (msg?.id) setMessages(p => [...p, msg].sort((a, b) => a.created_at - b.created_at));
     setNoteText(""); setSaving(false);
+    scrollToBottom();
+  }
+
+  async function sendReply() {
+    if (!selected || !replyText.trim()) return;
+    setSaving(true);
+    const res = await fetch(`/api/conversations/${selected.id}/reply`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: replyText }),
+    });
+    const msg = await res.json();
+    if (msg?.id) setMessages(p => [...p, msg].sort((a, b) => a.created_at - b.created_at));
+    setReplyText(""); setSaving(false);
     scrollToBottom();
   }
 
@@ -553,12 +613,29 @@ export default function MonitorPage() {
 
         {selected && (
           <div className="border-t border-gray-100 px-4 py-3 bg-white shrink-0">
-            <p className="text-xs font-medium text-gray-500 mb-1.5">Private Note</p>
+            <div className="flex gap-3 mb-1.5">
+              {handedOff && (
+                <button onClick={() => setInputTab("reply")}
+                  className={`text-xs font-medium pb-0.5 border-b-2 transition-colors ${inputTab === "reply" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-400 hover:text-gray-600"}`}>Reply</button>
+              )}
+              <button onClick={() => setInputTab("note")}
+                className={`text-xs font-medium pb-0.5 border-b-2 transition-colors ${inputTab === "note" ? "border-amber-500 text-amber-600" : "border-transparent text-gray-400 hover:text-gray-600"}`}>Private Note</button>
+            </div>
             <div className="flex gap-2">
-              <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
-                placeholder="Add a private note for agents…" rows={2}
-                className="flex-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs resize-none outline-none focus:border-gray-400 placeholder-gray-300" />
-              <Button size="sm" variant="outline" onClick={addNote} disabled={saving || !noteText.trim()}>Add Note</Button>
+              {inputTab === "reply" ? (
+                <textarea value={replyText} onChange={e => setReplyText(e.target.value)}
+                  placeholder="Send a reply to the customer…" rows={2}
+                  className="flex-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs resize-none outline-none focus:border-blue-400 placeholder-gray-300" />
+              ) : (
+                <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
+                  placeholder="Add a private note for agents…" rows={2}
+                  className="flex-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs resize-none outline-none focus:border-amber-400 placeholder-gray-300" />
+              )}
+              <Button size="sm" variant="outline"
+                onClick={inputTab === "reply" ? sendReply : addNote}
+                disabled={saving || (inputTab === "reply" ? !replyText.trim() : !noteText.trim())}>
+                {inputTab === "reply" ? "Send Reply" : "Add Note"}
+              </Button>
             </div>
           </div>
         )}
@@ -673,6 +750,7 @@ export default function MonitorPage() {
                   <InfoRow label="Status" value={selected.status} />
                   <InfoRow label="Inbox" value="Netomi Bot Conversations" />
                   <InfoRow label="Assignee" value={selected.assignee?.name ?? "Unassigned"} />
+                  <InfoRow label="Handed Off" value={handedOff ? "Yes" : "No"} />
                 </AccordionContent>
               </AccordionItem>
 
@@ -814,15 +892,15 @@ function ChatMsg({ msg, isUser }: { msg: Message; isUser: boolean }) {
   return (
     <div className={`flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <div className="h-6 w-6 shrink-0 rounded-full bg-blue-100 flex items-center justify-center mb-1">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1L5 9L9 1" stroke="#3b82f6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </div>
+        msg.content_attributes?.sender === "agent"
+          ? <div className="h-6 w-6 shrink-0 rounded-full bg-green-100 flex items-center justify-center mb-1 text-[9px] text-green-700 font-bold">A</div>
+          : <div className="h-6 w-6 shrink-0 rounded-full bg-blue-100 flex items-center justify-center mb-1 text-[9px] text-blue-700 font-bold">AI</div>
       )}
       <div className={`max-w-[68%] rounded-2xl px-4 py-2.5 ${isUser ? "bg-slate-700 text-white rounded-br-sm" : "bg-white border border-gray-200 text-gray-700 rounded-bl-sm shadow-sm"}`}>
         <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
         <p className={`text-[10px] mt-1 ${isUser ? "text-slate-300 text-right" : "text-gray-400"}`}>{fmtMsg(msg)}</p>
       </div>
-      {isUser && <div className="h-6 w-6 shrink-0 rounded-full bg-slate-200 flex items-center justify-center mb-1 text-[9px] text-slate-600 font-bold">U</div>}
+      {isUser && <div className="h-6 w-6 shrink-0 rounded-full bg-slate-200 flex items-center justify-center mb-1 text-[9px] text-slate-600 font-bold">{initials(msg.sender?.name ?? "V")}</div>}
     </div>
   );
 }
