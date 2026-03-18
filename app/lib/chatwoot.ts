@@ -90,11 +90,14 @@ export async function findOrCreateContact(
   const existing = contacts.find((c) => c.identifier === identifier);
   if (existing) {
     console.log(`[chatwoot] Found existing contact id=${existing.id} for identifier=${identifier}`);
-    if (email && !(existing as unknown as Record<string, unknown>).email) {
-      await request(`/contacts/${existing.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ email }),
-      }).catch(() => {});
+    const updates: Record<string, unknown> = {};
+    if (email && !(existing as unknown as Record<string, unknown>).email) updates.email = email;
+    // Update name if existing is a fallback "Visitor #XXXX" and we now have a real name
+    if (name && !name.startsWith("Visitor #") && (existing.name?.startsWith("Visitor #") || !existing.name)) {
+      updates.name = name;
+    }
+    if (Object.keys(updates).length > 0) {
+      await request(`/contacts/${existing.id}`, { method: "PUT", body: JSON.stringify(updates) }).catch(() => {});
     }
     return { ...existing, _alreadyExisted: true } as ChaContact & { _alreadyExisted?: boolean };
   }
@@ -196,19 +199,26 @@ export async function createConversation(
   return conv;
 }
 
-// Find the open conversation for a contact in a given inbox, or create one.
+// Find any conversation for a contact in a given inbox, or create one.
 export async function findOrCreateConversation(
   contactId: number,
   inboxId: number,
   netomiConversationId: string,
   additionalAttributes: Record<string, unknown> = {}
 ): Promise<ChaConversation> {
-  const data = await request<{ payload?: { conversations?: ChaConversation[] } }>(
-    `/contacts/${contactId}/conversations`
-  );
-  const convs: ChaConversation[] = data?.payload?.conversations ?? [];
-  const existing = convs.find(c => c.inbox_id === inboxId && c.status === "open");
-  if (existing) return existing;
+  const data = await request<unknown>(`/contacts/${contactId}/conversations`);
+  const obj = data as Record<string, unknown>;
+  // Response can be { payload: { conversations: [...] } } or { payload: [...] }
+  const payloadObj = obj?.payload as Record<string, unknown> | ChaConversation[] | undefined;
+  const convs: ChaConversation[] = Array.isArray(payloadObj)
+    ? payloadObj
+    : ((payloadObj as Record<string, unknown>)?.conversations as ChaConversation[] ?? []);
+
+  const existing = convs.find(c => Number(c.inbox_id) === inboxId);
+  if (existing) {
+    console.log(`[chatwoot] Found existing conversation id=${existing.id} for contact=${contactId}`);
+    return existing;
+  }
 
   return createConversation(inboxId, contactId, {
     netomi_conversation_id: netomiConversationId,

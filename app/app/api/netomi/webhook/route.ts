@@ -13,16 +13,23 @@ function fallbackName(conversationId: string): string {
   return `Visitor #${num}`;
 }
 
+function extractAttrs(obj: Record<string, unknown> | undefined) {
+  const customAttrs = obj?.additionalAttributes as Record<string, unknown> | undefined;
+  return (Array.isArray(customAttrs?.CUSTOM_ATTRIBUTES) ? customAttrs!.CUSTOM_ATTRIBUTES : []) as Array<{ name: string; value?: string | null }>;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const raw = await req.json() as Record<string, unknown>;
 
-    // ── Detect payload shape ─────────────────────────────────────────────────
-    // User message:  flat root  { conversationId, messagePayload, additionalAttributes, ... }
-    // Bot response:  wrapped    { body: { triggerType:"RESPONSE", requestPayload: { conversationId, ... }, attachments, timestamp } }
+    // Unwrap { body: {...} } wrapper if present — Netomi sends bot responses this way
+    const payload = (raw.body && typeof raw.body === "object" && !Array.isArray(raw.body))
+      ? raw.body as Record<string, unknown>
+      : raw;
 
-    const isWrapped = !!raw.body;
-    const body = (isWrapped ? raw.body : raw) as Record<string, unknown>;
+    console.log(`[webhook] triggerType=${payload.triggerType} keys=${Object.keys(payload).join(",")}`);
+
+    const triggerType = payload.triggerType as string | undefined;
 
     let conversationId: string;
     let content: string | null = null;
@@ -31,40 +38,42 @@ export async function POST(req: NextRequest) {
     let visitorNameStr: string | undefined;
     let email: string | undefined;
 
-    if (!isWrapped) {
-      // ── User message ───────────────────────────────────────────────────────
-      conversationId = body.conversationId as string;
-      const msgPayload = body.messagePayload as Record<string, unknown> | undefined;
-      content = (msgPayload?.text as string | undefined)?.trim() ?? null;
-      if (!content) return NextResponse.json({ ok: true });
-      messageType = "incoming";
-      timestampMs = (msgPayload?.timestamp as number) || Date.now();
-
-      const customAttrs = (body.additionalAttributes as Record<string, unknown> | undefined);
-      const attrs = (Array.isArray(customAttrs?.CUSTOM_ATTRIBUTES) ? customAttrs!.CUSTOM_ATTRIBUTES : []) as Array<{ name: string; value?: string | null }>;
-      visitorNameStr = getCustomAttr(attrs, "visitor_name");
-      email = getCustomAttr(attrs, "visitor_email");
-
-    } else {
+    if (triggerType === "RESPONSE") {
       // ── Bot response ───────────────────────────────────────────────────────
-      const reqPayload = body.requestPayload as Record<string, unknown>;
-      conversationId = reqPayload?.conversationId as string;
-      timestampMs = (body.timestamp as number) || Date.now();
+      const reqPayload = payload.requestPayload as Record<string, unknown> | undefined;
+      conversationId = (reqPayload?.conversationId ?? payload.conversationId) as string;
+      timestampMs = (payload.timestamp as number) || Date.now();
 
-      const attachments = (body.attachments ?? []) as Array<{
+      const attachments = (payload.attachments ?? []) as Array<{
         attachment?: { text?: string; attachmentResponseType?: string };
       }>;
       const textParts = attachments
         .filter(a => a.attachment?.text?.trim() && a.attachment.attachmentResponseType === "ANSWER_AI_RESPONSE")
         .map(a => a.attachment!.text!.trim());
 
+      console.log(`[webhook] RESPONSE attachments=${attachments.length} textParts=${textParts.length}`);
       if (textParts.length === 0) return NextResponse.json({ ok: true });
+
       content = textParts.join("\n\n");
       messageType = "outgoing";
 
-      // Extract visitor info from requestPayload.additionalAttributes
-      const customAttrs2 = (reqPayload?.additionalAttributes as Record<string, unknown> | undefined);
-      const attrs = (Array.isArray(customAttrs2?.CUSTOM_ATTRIBUTES) ? customAttrs2!.CUSTOM_ATTRIBUTES : []) as Array<{ name: string; value?: string | null }>;
+      const attrs = extractAttrs(reqPayload);
+      visitorNameStr = getCustomAttr(attrs, "visitor_name");
+      email = getCustomAttr(attrs, "visitor_email");
+
+    } else {
+      // ── User message (REQUEST or no triggerType) ───────────────────────────
+      conversationId = payload.conversationId as string;
+      const msgPayload = payload.messagePayload as Record<string, unknown> | undefined;
+      content = (msgPayload?.text as string | undefined)?.trim() ?? null;
+      if (!content) {
+        console.log(`[webhook] Skipping — no message text`);
+        return NextResponse.json({ ok: true });
+      }
+      messageType = "incoming";
+      timestampMs = (msgPayload?.timestamp as number) || Date.now();
+
+      const attrs = extractAttrs(payload);
       visitorNameStr = getCustomAttr(attrs, "visitor_name");
       email = getCustomAttr(attrs, "visitor_email");
     }
@@ -80,7 +89,7 @@ export async function POST(req: NextRequest) {
     const conv = await findOrCreateConversation(contact.id, INBOX_ID, conversationId);
     await createMessage(conv.id, content!, messageType, isoTime);
 
-    console.log(`[webhook] ${messageType} → Chatwoot conv=${conv.id} (${conversationId}): "${content!.substring(0, 60)}"`);
+    console.log(`[webhook] ${messageType} → conv=${conv.id} (${conversationId}): "${content!.substring(0, 60)}"`);
     return NextResponse.json({ ok: true });
 
   } catch (err) {
