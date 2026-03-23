@@ -10,6 +10,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useChatwootWebSocket } from "@/lib/useChatwootWebSocket";
+import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Conversation {
@@ -24,7 +27,7 @@ interface Message {
   content_attributes?: { original_time?: string; sender?: string };
 }
 interface Agent { id: number; name: string; email: string; }
-interface Profile { id: number; name: string; email: string; }
+interface Profile { id: number; name: string; email: string; pubsub_token?: string; account_id?: number; availability?: string; }
 
 type Tab = "all" | "assigned" | "unassigned";
 
@@ -135,7 +138,10 @@ export default function MonitorPage() {
 
   // Load profile
   useEffect(() => {
-    fetch("/api/profile").then(r => r.json()).then(setProfile);
+    fetch("/api/profile").then(r => r.json()).then(data => {
+      const acct = data.accounts?.find((a: any) => a.id === data.account_id);
+      setProfile({ ...data, availability: acct?.availability_status ?? acct?.availability ?? "offline" });
+    });
     fetch("/api/agents").then(r => r.json()).then(setAgents);
   }, []);
 
@@ -163,16 +169,22 @@ export default function MonitorPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payload }),
       }).then(r => r.json()).then(data => {
-        const list: Conversation[] = data?.data?.payload ?? data?.payload ?? [];
+        const list: Conversation[] = (data?.data?.payload ?? data?.payload ?? []).map((c: any) => ({
+          ...c,
+          assignee: c.assignee ?? (c.meta?.assignee ? { id: c.meta.assignee.id, name: c.meta.assignee.name, email: c.meta.assignee.email ?? "" } : null),
+        }));
         setConversations(list);
         if (list.length > 0) setSelected(s => s ?? list[0]);
       }).finally(() => setLoading(false));
     } else {
-      const at = t === "all" ? "all" : t === "assigned" ? "assigned" : "unassigned";
+      const at = t === "all" ? "all" : t === "assigned" ? "me" : "unassigned";
       fetch(`/api/conversations?assignee_type=${at}`)
         .then(r => r.json())
         .then(data => {
-          const list: Conversation[] = data?.data?.payload ?? [];
+          const list: Conversation[] = (data?.data?.payload ?? []).map((c: any) => ({
+            ...c,
+            assignee: c.assignee ?? (c.meta?.assignee ? { id: c.meta.assignee.id, name: c.meta.assignee.name, email: c.meta.assignee.email ?? "" } : null),
+          }));
           setConversations(list);
           if (list.length > 0) setSelected(s => s ?? list[0]);
         })
@@ -180,17 +192,14 @@ export default function MonitorPage() {
     }
   }, []);
 
-  // Load tab counts
+  // Load tab counts from a single API call (meta contains all counts)
   useEffect(() => {
-    Promise.all([
-      fetch("/api/conversations?assignee_type=all").then(r => r.json()),
-      fetch("/api/conversations?assignee_type=assigned").then(r => r.json()),
-      fetch("/api/conversations?assignee_type=unassigned").then(r => r.json()),
-    ]).then(([all, assigned, unassigned]) => {
+    fetch("/api/conversations?assignee_type=all").then(r => r.json()).then(data => {
+      const meta = data?.data?.meta ?? {};
       setTabCounts({
-        all: all?.data?.meta?.all_count ?? (all?.data?.payload?.length ?? 0),
-        assigned: assigned?.data?.meta?.assigned_count ?? (assigned?.data?.payload?.length ?? 0),
-        unassigned: unassigned?.data?.meta?.unassigned_count ?? (unassigned?.data?.payload?.length ?? 0),
+        all: meta.all_count ?? 0,
+        assigned: meta.mine_count ?? 0,
+        unassigned: meta.unassigned_count ?? 0,
       });
     });
   }, []);
@@ -216,7 +225,15 @@ export default function MonitorPage() {
       .catch(() => {});
     fetch(`/api/conversations/${selected.id}/messages`)
       .then(r => r.json())
-      .then(data => setMessages((data?.payload ?? []).sort((a: Message, b: Message) => a.created_at - b.created_at)))
+      .then(data => {
+        setMessages((data?.payload ?? []).sort((a: Message, b: Message) => a.created_at - b.created_at));
+        const assignee = data?.meta?.assignee;
+        if (assignee && assignee.id !== selected.assignee?.id) {
+          const a = { id: assignee.id, name: assignee.name, email: assignee.email ?? "" };
+          setSelected(prev => prev?.id === selected.id ? { ...prev, assignee: a } : prev);
+          setConversations(prev => prev.map(c => c.id === selected.id ? { ...c, assignee: a } : c));
+        }
+      })
       .finally(() => { setLoadingMsgs(false); scrollToBottom(); });
     fetch(`/api/conversations/${selected.id}/participants`)
       .then(r => r.json())
@@ -235,38 +252,111 @@ export default function MonitorPage() {
           setPrevConvs(all.filter(c => c.id !== selected.id));
         });
     }
-  }, [selected]);
+  }, [selected?.id]);
 
-  // Poll messages and conversation details for selected conversation every 5s
-  useEffect(() => {
-    if (!selected) return;
-    const interval = setInterval(() => {
-      fetch(`/api/conversations/${selected.id}/messages`)
-        .then(r => r.json())
-        .then(data => {
-          const fresh: Message[] = (data?.payload ?? []).sort((a: Message, b: Message) => a.created_at - b.created_at);
-          setMessages(prev => {
-            const lastPrev = prev[prev.length - 1]?.id;
-            const lastFresh = fresh[fresh.length - 1]?.id;
-            if (lastPrev === lastFresh && prev.length === fresh.length) return prev;
-            scrollToBottom();
-            return fresh;
-          });
-        })
-        .catch(() => {});
+  // WebSocket: real-time updates from Chatwoot
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
 
-      fetch(`/api/conversations/${selected.id}`)
-        .then(r => r.json())
-        .then(data => {
-          const ho = data?.custom_attributes?.handed_off === true;
-          console.log(`[poll] conversation=${selected.id} custom_attributes.handed_off=${ho}`);
+  const { connected: wsConnected } = useChatwootWebSocket(
+    profile?.pubsub_token ?? null,
+    profile?.account_id ?? null,
+    profile?.id ?? null,
+    process.env.NEXT_PUBLIC_CHATWOOT_WS_URL ?? "wss://app.chatwoot.com/cable",
+    {
+      onMessageCreated: (data: any) => {
+        if (data.conversation_id !== selectedRef.current?.id) return;
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.id)) return prev;
+          scrollToBottom();
+          return [...prev, data].sort((a, b) => a.created_at - b.created_at);
+        });
+      },
+      onMessageUpdated: (data: any) => {
+        if (data.conversation_id !== selectedRef.current?.id) return;
+        setMessages(prev => prev.map(m => m.id === data.id ? data : m));
+      },
+      onConversationCreated: (data: any) => {
+        setConversations(prev => {
+          if (prev.some(c => c.id === data.id)) return prev;
+          return [data, ...prev];
+        });
+        if (profileRef.current?.availability !== "online") return;
+        const senderName = data.meta?.sender?.name || "Unknown";
+        const time = data.created_at
+          ? new Date(data.created_at * 1000).toLocaleTimeString()
+          : "";
+        toast(`New conversation from ${senderName}`, {
+          description: `#${data.id} · ${time}`,
+          duration: 10000,
+          closeButton: true,
+          classNames: {
+            toast: "!bg-white !border-gray-200 !shadow-lg !rounded-lg !font-sans",
+            title: "!text-gray-800 !font-medium !text-sm",
+            description: "!text-gray-500 !text-xs",
+            actionButton: "!bg-gray-800 !text-white !text-xs !rounded-md !px-3 !py-1 !font-medium hover:!bg-gray-700",
+            closeButton: "!text-gray-400 hover:!text-gray-600",
+          },
+          action: {
+            label: "View",
+            onClick: () => setSelected(data),
+          },
+        });
+      },
+      onConversationStatusChanged: (data: any) => {
+        setConversations(prev => prev.map(c => c.id === data.id ? { ...c, status: data.status } : c));
+        if (data.id === selectedRef.current?.id) {
+          setSelected(prev => prev ? { ...prev, status: data.status } : prev);
+        }
+      },
+      onConversationUpdated: (data: any) => {
+        const assignee = data.meta?.assignee ? { id: data.meta.assignee.id, name: data.meta.assignee.name, email: data.meta.assignee.email ?? "" } : undefined;
+        setConversations(prev => prev.map(c => c.id === data.id ? { ...c, ...data, ...(assignee !== undefined ? { assignee } : {}) } : c));
+        const ho = data.custom_attributes?.handed_off === true;
+        if (data.id === selectedRef.current?.id) {
           setHandedOff(ho);
           if (!ho) setInputTab("note");
-        })
-        .catch(() => {});
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [selected]);
+          if (assignee !== undefined) setSelected(prev => prev ? { ...prev, assignee } : prev);
+        }
+        if (ho && profileRef.current?.availability === "online") {
+          const senderName = data.meta?.sender?.name || "Unknown";
+          const time = data.created_at
+            ? new Date(data.created_at * 1000).toLocaleTimeString()
+            : "";
+          new Audio("/mixkit-correct-answer-tone-2870.wav").play().catch(() => {});
+          toast(`Handed off: ${senderName}`, {
+            description: `#${data.id} · ${time}`,
+            duration: 10000,
+            closeButton: true,
+            classNames: {
+              toast: "!bg-white !border-orange-200 !shadow-lg !rounded-lg !font-sans",
+              title: "!text-orange-700 !font-medium !text-sm",
+              description: "!text-gray-500 !text-xs",
+              actionButton: "!bg-orange-600 !text-white !text-xs !rounded-md !px-3 !py-1 !font-medium hover:!bg-orange-700",
+              closeButton: "!text-gray-400 hover:!text-gray-600",
+            },
+            action: {
+              label: "Accept",
+              onClick: async () => {
+                const p = profileRef.current;
+                setSelected(data);
+                await fetch(`/api/conversations/${data.id}/assignments`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ assignee_id: p?.id }),
+                });
+                setConversations(prev => prev.map(c =>
+                  c.id === data.id ? { ...c, assignee: { id: p!.id, name: p!.name, email: p!.email } } : c
+                ));
+              },
+            },
+          });
+        }
+      },
+    }
+  );
 
 
   async function setStatus(status: string) {
@@ -394,19 +484,47 @@ export default function MonitorPage() {
     (c.meta?.sender?.name ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
-  const displayList = tab === "assigned" && profile
-    ? filtered.filter(c => c.assignee?.id === profile.id)
-    : filtered;
+  const displayList = filtered;
 
   return (
     <div className="flex h-screen bg-white overflow-hidden text-sm font-sans">
+      <Toaster richColors closeButton />
 
 
       {/* ── Conversation list ────────────────── */}
-      <div className="flex flex-col w-72 shrink-0 border-r border-gray-100 bg-white">
+      <div className="flex flex-col w-72 shrink-0 border-r border-gray-100 bg-white overflow-hidden">
         <div className="px-3 pt-3 pb-0 border-b border-gray-100">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold text-gray-800">Agent Inbox</h2>
+            <div>
+              <h2 className="font-semibold text-gray-800 flex items-center gap-2">Agent Inbox <span className={`inline-block w-2 h-2 rounded-full ${wsConnected ? "bg-green-500" : "bg-red-400"}`} title={wsConnected ? "Connected" : "Disconnected"} /></h2>
+              {profile && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 cursor-pointer">
+                    <span className={`inline-block w-2 h-2 rounded-full ${profile.availability === "online" ? "bg-green-500" : profile.availability === "busy" ? "bg-yellow-500" : "bg-gray-400"}`} />
+                    <span>{profile.name} <span className="text-gray-300">#{profile.id}</span></span>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {(["online", "offline", "busy"] as const).map(status => (
+                      <DropdownMenuItem
+                        key={status}
+                        onClick={async () => {
+                          const res = await fetch("/api/profile", {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ availability: status }),
+                          });
+                          if (res.ok) setProfile(prev => prev ? { ...prev, availability: status } : prev);
+                        }}
+                        className="flex items-center gap-2 text-xs capitalize"
+                      >
+                        <span className={`inline-block w-2 h-2 rounded-full ${status === "online" ? "bg-green-500" : status === "busy" ? "bg-yellow-500" : "bg-gray-400"}`} />
+                        {status}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
             <Link href="/" className="text-xs text-gray-400 hover:text-gray-600">Sync</Link>
           </div>
           {/* Tabs */}
@@ -500,7 +618,7 @@ export default function MonitorPage() {
             </div>
           )}
         </div>
-        <ScrollArea className="flex-1">
+        <div className="flex-1 overflow-y-auto min-h-0">
           {loading ? <p className="text-center text-xs text-gray-400 pt-10">Loading…</p>
             : displayList.length === 0 ? <p className="text-center text-xs text-gray-400 pt-10">No conversations</p>
             : displayList.map(conv => (
@@ -519,7 +637,7 @@ export default function MonitorPage() {
                 </div>
               </button>
             ))}
-        </ScrollArea>
+        </div>
       </div>
 
       {/* ── Messages ────────────────────────── */}

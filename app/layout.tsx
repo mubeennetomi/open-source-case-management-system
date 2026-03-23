@@ -12,6 +12,9 @@ const roboto = Roboto({
 export const metadata: Metadata = {
   title: "Netomi · Conversation Monitor",
   description: "Netomi-Chatwoot integration",
+  icons: {
+    icon: "/netomi-new-logo-grey.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
